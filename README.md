@@ -57,36 +57,6 @@ curl -X POST "http://localhost:5000/segment" \
 - PyTorch 1.9+
 - MONAI
 
-### Installation Steps
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/your-username/monai-endoscopic-segmentation.git
-   cd monai-endoscopic-segmentation
-   ```
-
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. Download the pre-trained model:
-   ```bash
-   # Create directories
-   mkdir -p models configs
-   
-   # Download model (for example purposes)
-   # Replace with the actual download command
-   python download_model.py
-   ```
-
-4. Start the server:
-   ```bash
-   python app.py
-   ```
-
-5. Access the web interface at `http://localhost:5000`
-
 ## Development and Customization
 
 ### File Structure
