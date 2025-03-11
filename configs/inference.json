@@ -1,0 +1,149 @@
+{
+    "imports": [
+        "$import glob",
+        "$import numpy",
+        "$import os"
+    ],
+    "bundle_root": ".",
+    "image_key": "image",
+    "output_dir": "$@bundle_root + '/eval'",
+    "output_ext": ".png",
+    "output_dtype": "$numpy.float32",
+    "output_postfix": "trans",
+    "separate_folder": true,
+    "load_pretrain": true,
+    "dataset_dir": "/workspace/data/endoscopic_tool_dataset",
+    "datalist": "$list(sorted(glob.glob(os.path.join(@dataset_dir, '*[!seg].jpg'))))",
+    "device": "$torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')",
+    "network_def": {
+        "_target_": "FlexibleUNet",
+        "in_channels": 3,
+        "out_channels": 2,
+        "backbone": "efficientnet-b2",
+        "spatial_dims": 2,
+        "pretrained": false,
+        "is_pad": false,
+        "pre_conv": null
+    },
+    "network": "$@network_def.to(@device)",
+    "preprocessing": {
+        "_target_": "Compose",
+        "transforms": [
+            {
+                "_target_": "LoadImaged",
+                "keys": "@image_key",
+                "image_only": false
+            },
+            {
+                "_target_": "EnsureChannelFirstd",
+                "keys": "@image_key",
+                "channel_dim": -1
+            },
+            {
+                "_target_": "Resized",
+                "keys": [
+                    "@image_key"
+                ],
+                "spatial_size": [
+                    736,
+                    480
+                ],
+                "mode": [
+                    "bilinear"
+                ]
+            },
+            {
+                "_target_": "ScaleIntensityd",
+                "keys": [
+                    "@image_key"
+                ]
+            }
+        ]
+    },
+    "dataset": {
+        "_target_": "Dataset",
+        "data": "$[{'image': i} for i in @datalist]",
+        "transform": "@preprocessing"
+    },
+    "dataloader": {
+        "_target_": "DataLoader",
+        "dataset": "@dataset",
+        "batch_size": 1,
+        "shuffle": false,
+        "num_workers": 4
+    },
+    "inferer": {
+        "_target_": "SimpleInferer"
+    },
+    "postprocessing": {
+        "_target_": "Compose",
+        "transforms": [
+            {
+                "_target_": "Invertd",
+                "keys": "pred",
+                "transform": "@preprocessing",
+                "orig_keys": "@image_key",
+                "meta_key_postfix": "meta_dict",
+                "nearest_interp": false,
+                "to_tensor": true
+            },
+            {
+                "_target_": "AsDiscreted",
+                "argmax": true,
+                "to_onehot": 2,
+                "keys": [
+                    "pred"
+                ]
+            },
+            {
+                "_target_": "Lambdad",
+                "keys": [
+                    "pred"
+                ],
+                "func": "$lambda x : x[1:]"
+            },
+            {
+                "_target_": "SaveImaged",
+                "keys": ["pred", "image"],
+                "meta_keys": ["pred_meta_dict", "image_meta_dict"],
+                "output_dir": "@output_dir",
+                "output_ext": "@output_ext",
+                "output_dtype": "@output_dtype",
+                "output_postfix": "@output_postfix",
+                "separate_folder": "@separate_folder",
+                "scale": 255,
+                "squeeze_end_dims": true
+            }
+        ]
+    },
+    "handlers": [
+        {
+            "_target_": "StatsHandler",
+            "iteration_log": false
+        }
+    ],
+    "evaluator": {
+        "_target_": "SupervisedEvaluator",
+        "device": "@device",
+        "val_data_loader": "@dataloader",
+        "network": "@network",
+        "inferer": "@inferer",
+        "postprocessing": "@postprocessing",
+        "val_handlers": "@handlers"
+    },
+    "checkpointloader": {
+        "_target_": "CheckpointLoader",
+        "load_path": "$@bundle_root + '/models/model.pt'",
+        "load_dict": {
+            "model": "@network"
+        },
+        "map_location": "@device"
+    },
+    "initialize": [
+        "$monai.utils.set_determinism(seed=123)",
+        "$@checkpointloader(@evaluator) if @load_pretrain else None"
+    ],
+    "run": [
+        "$@evaluator.run()"
+    ]
+}

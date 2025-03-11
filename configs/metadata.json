@@ -1,0 +1,104 @@
+{
+    "schema": "https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/meta_schema_20220324.json",
+    "version": "0.6.0",
+    "changelog": {
+        "0.6.0": "use monai 1.4 and update large files",
+        "0.5.9": "update to use monai 1.3.1",
+        "0.5.8": "add load_pretrain flag for infer",
+        "0.5.7": "add checkpoint loader for infer",
+        "0.5.6": "update to use monai 1.3.0",
+        "0.5.5": "update AddChanneld with EnsureChannelFirstd and set image_only to False",
+        "0.5.4": "fix the wrong GPU index issue of multi-node",
+        "0.5.3": "remove error dollar symbol in readme",
+        "0.5.2": "remove the CheckpointLoader from the train.json",
+        "0.5.1": "add RAM warning",
+        "0.5.0": "update TensorRT descriptions",
+        "0.4.9": "update the model weights",
+        "0.4.8": "update the TensorRT part in the README file",
+        "0.4.7": "fix mgpu finalize issue",
+        "0.4.6": "enable deterministic training",
+        "0.4.5": "add the command of executing inference with TensorRT models",
+        "0.4.4": "adapt to BundleWorkflow interface",
+        "0.4.3": "update this bundle to support TensorRT convert",
+        "0.4.2": "support monai 1.2 new FlexibleUNet",
+        "0.4.1": "add name tag",
+        "0.4.0": "add support for multi-GPU training and evaluation",
+        "0.3.2": "restructure readme to match updated template",
+        "0.3.1": "add figures of workflow and metrics, add invert transform",
+        "0.3.0": "update dataset processing",
+        "0.2.1": "update to use monai 1.0.1",
+        "0.2.0": "update license files",
+        "0.1.0": "complete the first version model package",
+        "0.0.1": "initialize the model package structure"
+    },
+    "monai_version": "1.4.0",
+    "pytorch_version": "2.4.0",
+    "numpy_version": "1.24.4",
+    "optional_packages_version": {
+        "nibabel": "5.2.1",
+        "pytorch-ignite": "0.4.11"
+    },
+    "name": "Endoscopic tool segmentation",
+    "task": "Endoscopic tool segmentation",
+    "description": "A pre-trained binary segmentation model for endoscopic tool segmentation",
+    "authors": "NVIDIA DLMED team",
+    "copyright": "Copyright (c) 2021-2022, NVIDIA CORPORATION",
+    "data_source": "private dataset",
+    "data_type": "RGB",
+    "image_classes": "three channel data, intensity [0-255]",
+    "label_classes": "single channel data, 1/255 is tool, 0 is background",
+    "pred_classes": "2 channels OneHot data, channel 1 is tool, channel 0 is background",
+    "eval_metrics": {
+        "mean_iou": 0.86
+    },
+    "references": [
+        "Tan, M. and Le, Q. V. Efficientnet: Rethinking model scaling for convolutional neural networks. ICML, 2019a. https://arxiv.org/pdf/1905.11946.pdf",
+        "O. Ronneberger, P. Fischer, and T. Brox. U-net: Convolutional networks for biomedical image segmentation. In International Conference on Medical image computing and computer-assisted intervention, pages 234\u2013241. Springer, 2015. https://arxiv.org/pdf/1505.04597.pdf"
+    ],
+    "network_data_format": {
+        "inputs": {
+            "image": {
+                "type": "magnitude",
+                "format": "RGB",
+                "modality": "regular",
+                "num_channels": 3,
+                "spatial_shape": [
+                    736,
+                    480
+                ],
+                "dtype": "float32",
+                "value_range": [
+                    0,
+                    1
+                ],
+                "is_patch_data": false,
+                "channel_def": {
+                    "0": "R",
+                    "1": "G",
+                    "2": "B"
+                }
+            }
+        },
+        "outputs": {
+            "pred": {
+                "type": "image",
+                "format": "segmentation",
+                "num_channels": 2,
+                "spatial_shape": [
+                    736,
+                    480
+                ],
+                "dtype": "float32",
+                "value_range": [
+                    0,
+                    1
+                ],
+                "is_patch_data": false,
+                "channel_def": {
+                    "0": "background",
+                    "1": "tools"
+                }
+            }
+        }
+    }
+}
