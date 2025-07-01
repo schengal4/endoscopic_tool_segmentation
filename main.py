@@ -109,15 +109,15 @@ def load_model():
     print("Model loaded successfully")
 
     
-    # ADD THIS LOG:
-    logger.info(f"AUDIT: {json.dumps({
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'event_type': 'MODEL_LOADED',
-        'details': {
-            'device': str(device),
-            'model_type': 'UNet_EfficientNet_B2'
-        }
-    })}")
+    # # ADD THIS LOG:
+    # logger.info(f"AUDIT: {json.dumps({
+    #     'timestamp': datetime.utcnow().isoformat() + 'Z',
+    #     'event_type': 'MODEL_LOADED',
+    #     'details': {
+    #         'device': str(device),
+    #         'model_type': 'UNet_EfficientNet_B2'
+    #     }
+    # })}")
 
 def log_processing_event(event_type: str, session_id: str, details: dict):
     """Simple audit logging for medical AI processing events"""
@@ -129,7 +129,7 @@ def log_processing_event(event_type: str, session_id: str, details: dict):
     }
     
     # Log to your existing logger
-    logger.info(f"AUDIT: {json.dumps(audit_entry)}")
+    # logger.info(f"AUDIT: {json.dumps(audit_entry)}")
 
 @app.on_event("startup")
 async def startup_event():
