@@ -1089,4 +1089,4 @@ def main():
     uvicorn.run("app:app", port=5000, reload=True)
 
 if __name__ == '__main__':
-    main()
+    main() 
