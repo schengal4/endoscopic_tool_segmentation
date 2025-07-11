@@ -103,7 +103,7 @@ def load_model():
     original_postprocessing.transforms = new_transforms
     
     # Load model weights
-    model.load_state_dict(torch.load(checkpoint, map_location=device))
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=False))
     model.eval()
     
     print("Model loaded successfully")
