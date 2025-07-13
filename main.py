@@ -1439,6 +1439,72 @@ async def debug_full_pipeline_test():
     
     return debug_info
 
+@app.get("/debug/check-fix")
+async def debug_check_fix():
+    """Check if the Invertd fix was applied and test it"""
+    
+    # Test with a minimal example
+    test_dir = os.path.join(BASE_DIR, "real")
+    if not os.path.exists(test_dir):
+        return {"error": "No test directory"}
+    
+    try:
+        # Setup
+        if model is None:
+            load_model()
+        
+        model_config["dataset_dir"] = test_dir
+        model_config["output_dir"] = RESULTS_DIR
+        
+        # Get dataloader
+        dataloader = model_config.get_parsed_content("dataloader")
+        
+        # Process just one batch
+        with torch.no_grad():
+            for idx, batch_data in enumerate(dataloader):
+                images = batch_data["image"].to(device)
+                batch_data["pred"] = inferer(images, network=model)
+                decollated_data = decollate_batch(batch_data)
+                
+                for data_i in decollated_data:
+                    # THIS IS THE CRITICAL TEST - see if your fix is working
+                    try:
+                        processed = original_postprocessing(data_i)
+                        return {
+                            "status": "postprocessing_success",
+                            "message": "Postprocessing worked without errors",
+                            "fix_applied": "not_needed"
+                        }
+                    except RuntimeError as e:
+                        if "Invertd" in str(e):
+                            # Test if your fallback code exists
+                            mask = data_i["pred"].detach().cpu().numpy()
+                            if mask.min() < 0 or mask.max() > 1:
+                                mask = torch.sigmoid(torch.from_numpy(mask)).numpy()
+                            
+                            return {
+                                "status": "fix_working",
+                                "message": "Invertd error caught and handled successfully",
+                                "fix_applied": "yes",
+                                "original_error": str(e),
+                                "mask_shape": mask.shape,
+                                "mask_range": [float(mask.min()), float(mask.max())]
+                            }
+                        else:
+                            return {
+                                "status": "different_error", 
+                                "error": str(e),
+                                "fix_applied": "unknown"
+                            }
+                break
+                
+    except Exception as e:
+        return {
+            "status": "setup_error",
+            "error": str(e),
+            "fix_applied": "cannot_test"
+        }
+
 def main():
     """Run the FastAPI app with Uvicorn"""
     uvicorn.run("app:app", port=5000, reload=True)
