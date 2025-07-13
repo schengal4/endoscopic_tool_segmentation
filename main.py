@@ -3,6 +3,7 @@ import monai
 import torch
 import shutil
 import uvicorn
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import tempfile
 import numpy as np
 from typing import List
@@ -43,12 +44,19 @@ app = FastAPI(
 )
 
 # Add CORS middleware
+# EXACT SAME CORS CONFIG AS WORKING APP
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_origins=["*"],
+    allow_credentials=True,  # Same as working app
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+# KEEP TrustedHostMiddleware like working app
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["*"]
 )
 
 # Configure device
@@ -868,6 +876,10 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
         # Get dataloader with updated paths
         dataloader = model_config.get_parsed_content("dataloader")
         
+        # Create a fresh postprocessing pipeline for this request to avoid state issues
+        # Instead of using the global postprocessing, create a minimal one or skip it entirely
+        # since we're doing manual processing anyway
+        
         # Process all images
         result_paths = {}
         
@@ -895,8 +907,26 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
                 decollated_data = decollate_batch(batch_data)
                 
                 for data_i in decollated_data:
-                    # Apply postprocessing (excluding SaveImaged)
-                    processed = original_postprocessing(data_i)
+                    # Try to use postprocessing, but handle the Invertd error gracefully
+                    try:
+                        processed = original_postprocessing(data_i)
+                        mask = processed["pred"].detach().cpu().numpy()
+                        print("Successfully used postprocessing pipeline")
+                    except RuntimeError as e:
+                        if "Invertd" in str(e) or "applying transform" in str(e):
+                            print(f"Postprocessing failed due to transform inversion issue: {e}")
+                            print("Falling back to manual processing...")
+                            # Use raw prediction and apply essential postprocessing manually
+                            raw_pred = data_i["pred"].detach().cpu().numpy()
+                            
+                            # Apply sigmoid activation (essential for converting logits to probabilities)
+                            if raw_pred.min() < 0 or raw_pred.max() > 1:
+                                raw_pred = torch.sigmoid(torch.from_numpy(raw_pred)).numpy()
+                                print("Applied sigmoid activation")
+                            
+                            mask = raw_pred
+                        else:
+                            raise e  # Re-raise if it's a different error
                     
                     # Create subfolder for this image using the original filename for better organization
                     img_output_dir = os.path.join(results_path, filename_no_ext)
@@ -916,7 +946,7 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
                     orig_img = (orig_img * 255).astype(np.uint8)
                     
                     # 2. GET THE SEGMENTATION MASK
-                    mask = processed["pred"].detach().cpu().numpy()
+                    # mask is already processed above (either from postprocessing or manual)
                     
                     if len(mask.shape) > 3:  # If it's B,C,H,W format
                         mask = mask[0]  # Remove batch dimension
@@ -928,6 +958,9 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
                     else:
                         # If single channel binary mask
                         mask_vis = mask[0]
+                    
+                    # Apply threshold to create clean binary mask
+                    mask_vis = (mask_vis > 0.5).astype(np.float32)
                     
                     # Scale mask to 0-255 for visualization
                     mask_vis = (mask_vis * 255).astype(np.uint8)
@@ -1063,7 +1096,6 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
             "session_id": session_id,
             "diagnostic_info": diagnostic_info
         }
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up all uploaded and generated files when the app shuts down"""
@@ -1083,7 +1115,312 @@ async def shutdown_event():
         print("All temporary files have been cleaned up on shutdown")
     except Exception as e:
         print(f"Error cleaning up files on shutdown: {str(e)}")
+
+# Add these debug endpoints to your existing main.py
+# Just paste them before the main() function
+
+@app.get("/debug/environment")
+async def debug_environment():
+    """Debug endpoint to check environment and paths"""
+    import torch
+    import sys
+    import platform
+    
+    return {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "torch_version": torch.__version__,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+        "current_working_directory": os.getcwd(),
+        "paths": {
+            "BASE_DIR": BASE_DIR,
+            "MODELS_DIR": MODELS_DIR,
+            "CONFIG_DIR": CONFIG_DIR,
+            "UPLOAD_DIR": UPLOAD_DIR,
+            "RESULTS_DIR": RESULTS_DIR
+        },
+        "path_exists": {
+            "BASE_DIR": os.path.exists(BASE_DIR),
+            "MODELS_DIR": os.path.exists(MODELS_DIR),
+            "CONFIG_DIR": os.path.exists(CONFIG_DIR),
+            "UPLOAD_DIR": os.path.exists(UPLOAD_DIR),
+            "RESULTS_DIR": os.path.exists(RESULTS_DIR)
+        }
+    }
+
+@app.get("/debug/files")
+async def debug_files():
+    """Debug endpoint to check critical files"""
+    files_info = {}
+    
+    # Check models directory
+    if os.path.exists(MODELS_DIR):
+        files_info["models"] = {
+            "directory_contents": os.listdir(MODELS_DIR),
+            "model_pt_exists": os.path.exists(os.path.join(MODELS_DIR, "model.pt")),
+            "model_pt_size": os.path.getsize(os.path.join(MODELS_DIR, "model.pt")) if os.path.exists(os.path.join(MODELS_DIR, "model.pt")) else None
+        }
+    else:
+        files_info["models"] = {"error": "models directory does not exist"}
+    
+    # Check configs directory
+    if os.path.exists(CONFIG_DIR):
+        files_info["configs"] = {
+            "directory_contents": os.listdir(CONFIG_DIR),
+            "inference_json_exists": os.path.exists(os.path.join(CONFIG_DIR, "inference.json")),
+            "inference_json_size": os.path.getsize(os.path.join(CONFIG_DIR, "inference.json")) if os.path.exists(os.path.join(CONFIG_DIR, "inference.json")) else None
+        }
         
+        # Try to read the inference.json
+        inference_path = os.path.join(CONFIG_DIR, "inference.json")
+        if os.path.exists(inference_path):
+            try:
+                with open(inference_path, 'r') as f:
+                    content = f.read()
+                    files_info["configs"]["inference_json_readable"] = True
+                    files_info["configs"]["inference_json_length"] = len(content)
+                    files_info["configs"]["inference_json_preview"] = content[:200] + "..." if len(content) > 200 else content
+            except Exception as e:
+                files_info["configs"]["inference_json_readable"] = False
+                files_info["configs"]["inference_json_error"] = str(e)
+    else:
+        files_info["configs"] = {"error": "configs directory does not exist"}
+    
+    # Check real directory (for examples)
+    real_dir = os.path.join(BASE_DIR, "real")
+    if os.path.exists(real_dir):
+        files_info["real"] = {
+            "directory_contents": os.listdir(real_dir),
+            "image_files": [f for f in os.listdir(real_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+        }
+        
+        # Check first image file
+        image_files = [f for f in os.listdir(real_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+        if image_files:
+            first_image = os.path.join(real_dir, image_files[0])
+            files_info["real"]["first_image_size"] = os.path.getsize(first_image)
+            
+            # Try to open with PIL
+            try:
+                from PIL import Image
+                with Image.open(first_image) as img:
+                    files_info["real"]["first_image_pil_info"] = {
+                        "mode": img.mode,
+                        "size": img.size,
+                        "format": img.format
+                    }
+            except Exception as e:
+                files_info["real"]["first_image_pil_error"] = str(e)
+    else:
+        files_info["real"] = {"exists": False}
+    
+    return files_info
+
+@app.get("/debug/model-loading")
+async def debug_model_loading():
+    """Debug endpoint to test model loading step by step"""
+    debug_info = {
+        "steps": {},
+        "current_state": {
+            "model_loaded": model is not None,
+            "config_loaded": model_config is not None
+        }
+    }
+    
+    # Step 1: Check config file
+    model_config_file = os.path.join(CONFIG_DIR, "inference.json")
+    try:
+        debug_info["steps"]["1_config_file_check"] = {
+            "exists": os.path.exists(model_config_file),
+            "path": model_config_file,
+            "status": "success"
+        }
+    except Exception as e:
+        debug_info["steps"]["1_config_file_check"] = {"status": "error", "error": str(e)}
+    
+    # Step 2: Try to load config
+    try:
+        from monai.bundle import ConfigParser
+        test_config = ConfigParser()
+        test_config.read_config(model_config_file)
+        debug_info["steps"]["2_config_parse"] = {
+            "status": "success",
+            "config_keys": list(test_config.config.keys()) if hasattr(test_config, 'config') else "no config attr"
+        }
+    except Exception as e:
+        debug_info["steps"]["2_config_parse"] = {"status": "error", "error": str(e)}
+    
+    # Step 3: Check model checkpoint
+    checkpoint_path = os.path.join(MODELS_DIR, "model.pt")
+    try:
+        debug_info["steps"]["3_checkpoint_check"] = {
+            "exists": os.path.exists(checkpoint_path),
+            "path": checkpoint_path,
+            "size": os.path.getsize(checkpoint_path) if os.path.exists(checkpoint_path) else None,
+            "status": "success"
+        }
+    except Exception as e:
+        debug_info["steps"]["3_checkpoint_check"] = {"status": "error", "error": str(e)}
+    
+    # Step 4: Try to load checkpoint
+    if os.path.exists(checkpoint_path):
+        try:
+            import torch
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+            debug_info["steps"]["4_checkpoint_load"] = {
+                "status": "success",
+                "type": type(checkpoint).__name__,
+                "keys": list(checkpoint.keys()) if isinstance(checkpoint, dict) else "not a dict"
+            }
+        except Exception as e:
+            debug_info["steps"]["4_checkpoint_load"] = {"status": "error", "error": str(e)}
+    
+    # Step 5: Try to get network from config
+    if os.path.exists(model_config_file):
+        try:
+            from monai.bundle import ConfigParser
+            test_config = ConfigParser()
+            test_config.read_config(model_config_file)
+            test_config["bundle_root"] = "."
+            
+            network = test_config.get_parsed_content("network")
+            debug_info["steps"]["5_network_creation"] = {
+                "status": "success",
+                "network_type": type(network).__name__,
+                "network_str": str(network)[:200] + "..." if len(str(network)) > 200 else str(network)
+            }
+        except Exception as e:
+            debug_info["steps"]["5_network_creation"] = {"status": "error", "error": str(e)}
+    
+    return debug_info
+
+@app.get("/debug/dataloader")
+async def debug_dataloader(test_dir: str = "real"):
+    """Debug endpoint to test dataloader creation"""
+    debug_info = {}
+    
+    test_path = os.path.join(BASE_DIR, test_dir)
+    
+    if not os.path.exists(test_path):
+        return {"error": f"Test directory {test_path} does not exist"}
+    
+    # Check if we have a loaded config
+    if model_config is None:
+        try:
+            from monai.bundle import ConfigParser
+            temp_config = ConfigParser()
+            temp_config.read_config(os.path.join(CONFIG_DIR, "inference.json"))
+            temp_config["bundle_root"] = "."
+            temp_config["dataset_dir"] = test_path
+            temp_config["output_dir"] = RESULTS_DIR
+        except Exception as e:
+            return {"error": f"Cannot load config: {str(e)}"}
+    else:
+        temp_config = model_config
+        temp_config["dataset_dir"] = test_path
+        temp_config["output_dir"] = RESULTS_DIR
+    
+    # Try to create dataloader
+    try:
+        dataloader = temp_config.get_parsed_content("dataloader")
+        debug_info["dataloader_creation"] = {
+            "status": "success",
+            "dataloader_type": type(dataloader).__name__,
+            "dataset_length": len(dataloader.dataset) if hasattr(dataloader, 'dataset') else "no dataset attr"
+        }
+        
+        # Try to get first batch
+        try:
+            first_batch = next(iter(dataloader))
+            debug_info["first_batch"] = {
+                "status": "success",
+                "batch_keys": list(first_batch.keys()),
+                "image_shape": first_batch["image"].shape if "image" in first_batch else "no image key",
+                "filename": first_batch.get("image_meta_dict", {}).get("filename_or_obj", "no filename") 
+            }
+        except Exception as e:
+            debug_info["first_batch"] = {"status": "error", "error": str(e)}
+            
+    except Exception as e:
+        debug_info["dataloader_creation"] = {"status": "error", "error": str(e)}
+    
+    return debug_info
+
+@app.get("/debug/full-pipeline-test")
+async def debug_full_pipeline_test():
+    """Debug endpoint to test the full pipeline with minimal data"""
+    debug_info = {"steps": {}}
+    
+    # Use real directory if it exists, otherwise skip
+    test_dir = os.path.join(BASE_DIR, "real")
+    if not os.path.exists(test_dir):
+        return {"error": "No test directory available. Create a 'real' directory with sample images."}
+    
+    try:
+        # Step 1: Load model if not loaded
+        if model is None:
+            debug_info["steps"]["model_loading"] = "attempting..."
+            load_model()
+            debug_info["steps"]["model_loading"] = "success"
+        else:
+            debug_info["steps"]["model_loading"] = "already_loaded"
+        
+        # Step 2: Setup paths
+        model_config["dataset_dir"] = test_dir
+        model_config["output_dir"] = RESULTS_DIR
+        debug_info["steps"]["path_setup"] = "success"
+        
+        # Step 3: Create dataloader
+        dataloader = model_config.get_parsed_content("dataloader")
+        debug_info["steps"]["dataloader_creation"] = "success"
+        
+        # Step 4: Try to process one batch
+        with torch.no_grad():
+            for idx, batch_data in enumerate(dataloader):
+                if idx > 0:  # Only process first batch
+                    break
+                    
+                # Move to device
+                images = batch_data["image"].to(device)
+                debug_info["steps"]["batch_processing"] = {
+                    "image_shape": images.shape,
+                    "device": str(images.device)
+                }
+                
+                # Run inference
+                batch_data["pred"] = inferer(images, network=model)
+                debug_info["steps"]["inference"] = {
+                    "pred_shape": batch_data["pred"].shape,
+                    "pred_min": float(batch_data["pred"].min()),
+                    "pred_max": float(batch_data["pred"].max())
+                }
+                
+                # Try postprocessing
+                try:
+                    decollated_data = decollate_batch(batch_data)
+                    debug_info["steps"]["decollation"] = "success"
+                    
+                    for data_i in decollated_data:
+                        processed = original_postprocessing(data_i)
+                        debug_info["steps"]["postprocessing"] = "success"
+                        break  # Only test first sample
+                        
+                except Exception as e:
+                    debug_info["steps"]["postprocessing"] = {"error": str(e)}
+                
+                break
+        
+        debug_info["overall_status"] = "success"
+        
+    except Exception as e:
+        debug_info["steps"]["error"] = str(e)
+        debug_info["overall_status"] = "failed"
+        import traceback
+        debug_info["traceback"] = traceback.format_exc()
+    
+    return debug_info
+
 def main():
     """Run the FastAPI app with Uvicorn"""
     uvicorn.run("app:app", port=5000, reload=True)
