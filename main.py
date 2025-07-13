@@ -193,8 +193,26 @@ def get_results(directory_file_path: str, output_directory_file_path: str):
             decollated_data = decollate_batch(batch_data)
             
             for data_i in decollated_data:
-                # Apply postprocessing (excluding SaveImaged)
-                processed = original_postprocessing(data_i)
+                try:
+                    processed = original_postprocessing(data_i)
+                    mask = processed["pred"].detach().cpu().numpy()
+                    print("Successfully used postprocessing pipeline")
+                except RuntimeError as e:
+                    if "Invertd" in str(e) or "applying transform" in str(e):
+                        print(f"Postprocessing failed due to transform issue: {e}")
+                        print("Falling back to manual processing...")
+                        # Use raw prediction and apply essential postprocessing manually
+                        raw_pred = data_i["pred"].detach().cpu().numpy()
+                        
+                        # Apply sigmoid activation (essential for converting logits to probabilities)
+                        if raw_pred.min() < 0 or raw_pred.max() > 1:
+                            raw_pred = torch.sigmoid(torch.from_numpy(raw_pred)).numpy()
+                            print("Applied sigmoid activation")
+                        
+                        mask = raw_pred
+                    else:
+                        raise e  # Re-raise if it's a different error
+
                 
                 # Create subfolder for this image
                 img_output_dir = os.path.join(output_directory_file_path, filename_no_ext)
@@ -214,7 +232,7 @@ def get_results(directory_file_path: str, output_directory_file_path: str):
                 orig_img = (orig_img * 255).astype(np.uint8)
                 
                 # 2. GET THE SEGMENTATION MASK
-                mask = processed["pred"].detach().cpu().numpy()
+                # mask = processed["pred"].detach().cpu().numpy()
                 
                 if len(mask.shape) > 3:  # If it's B,C,H,W format
                     mask = mask[0]  # Remove batch dimension
