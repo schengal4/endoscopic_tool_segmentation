@@ -3,6 +3,4 @@ torch
 torchvision
 torchaudio
 numpy
-nibabel
-pytorch-ignite
 fastapi[standard]
