@@ -284,7 +284,6 @@ async def root(request: Request):
       <div class="footer">API: <code>POST /segment</code> • <code>GET /example</code> • <code>GET /health</code></div>
     </div>
   </div>
-
 <script>
 (function(){
   const fileInput = document.getElementById('file-input');
@@ -295,12 +294,15 @@ async def root(request: Request):
   const btnExample = document.getElementById('example');
   const btnClear = document.getElementById('clear');
 
+  // --- prefix-safe URL builder (KEY CHANGE) ---
+  const api = (p) => new URL(p, window.location.href).toString();
+
   let files = [];
 
   function setStatus(msg, cls=''){ statusEl.className='status ' + cls; statusEl.textContent=msg; }
   function prettyBytes(n){
     if(!Number.isFinite(n)) return '';
-    const u=['B','KB','MB','GB']; let i=0; while(n>=1024 && i<u.length-1){ n/=1024; i++; } 
+    const u=['B','KB','MB','GB']; let i=0; while(n>=1024 && i<u.length-1){ n/=1024; i++; }
     return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + u[i];
   }
   function renderChips(){
@@ -353,7 +355,8 @@ async def root(request: Request):
       setStatus('Uploading & processing…');
       const fd = new FormData();
       files.forEach(f => fd.append('files', f, f.name));
-      const resp = await fetch('/segment', { method:'POST', body: fd });
+      // CHANGED: use api('segment') instead of '/segment'
+      const resp = await fetch(api('segment'), { method:'POST', body: fd });
       if(!resp.ok){
         const msg = await resp.text();
         throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
@@ -369,7 +372,8 @@ async def root(request: Request):
   btnExample.addEventListener('click', async ()=>{
     try{
       setStatus('Running example…');
-      const resp = await fetch('/example');
+      // CHANGED: use api('example') instead of '/example'
+      const resp = await fetch(api('example'));
       if(!resp.ok){
         const msg = await resp.text();
         throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
