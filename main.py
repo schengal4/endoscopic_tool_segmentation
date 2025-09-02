@@ -20,7 +20,7 @@ import tempfile
 import zipfile
 import logging
 import json
-from fastapi import Request  # add at the top with your other imports
+from fastapi import Request, Response  # add at the top with your other imports
 
 # ---- logging ----
 logging.basicConfig(level=logging.INFO)
@@ -35,10 +35,13 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_credentials=False,
+    allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+    max_age=86400,
 )
+
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 
 # ---- paths & device ----
@@ -450,6 +453,10 @@ async def get_example(background_tasks: BackgroundTasks):
 
     headers = {"Content-Disposition": f'attachment; filename="{session_id}_results.zip"'}
     return FileResponse(zip_path, media_type="application/zip", headers=headers)
+
+@app.options("/segment")
+async def options_segment():
+    return Response(status_code=204)
 
 @app.post("/segment")
 async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
