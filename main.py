@@ -21,6 +21,9 @@ import zipfile
 import logging
 import json
 from fastapi import Request, Response  # add at the top with your other imports
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+
 
 # ---- logging ----
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +46,7 @@ app.add_middleware(
 )
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
+app.add_middleware(ProxyHeadersMiddleware)
 
 # ---- paths & device ----
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
