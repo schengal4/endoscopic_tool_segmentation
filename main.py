@@ -1,11 +1,11 @@
-# main.py  (simplified returns-as-zip version)
+# main.py  (safe UI tweaks + proxy-friendly helpers)
 
 import os
 import torch
 import shutil
 import uvicorn
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from typing import List, Dict
+from typing import List, Dict, Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,10 +20,8 @@ import tempfile
 import zipfile
 import logging
 import json
-from fastapi import Request, Response  # add at the top with your other imports
+from fastapi import Request, Response
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
-
-
 
 # ---- logging ----
 logging.basicConfig(level=logging.INFO)
@@ -33,7 +31,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="MONAI Endoscopic Tool Segmentation API",
     description="API for segmenting surgical tools in endoscopic images",
-    version="1.0.0"
+    version="1.0.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -44,7 +42,6 @@ app.add_middleware(
     expose_headers=["Content-Disposition"],
     max_age=86400,
 )
-
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["*"])
 app.add_middleware(ProxyHeadersMiddleware)
 
@@ -58,15 +55,14 @@ RESULTS_DIR = os.path.join(BASE_DIR, "monai_results")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# # If you still want to browse results in dev, you can keep this mount;
-# # it is not used by any endpoint response anymore.
-# app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")
+# app.mount("/results", StaticFiles(directory=RESULTS_DIR), name="results")  # optional in dev
 
 # ---- MONAI globals ----
 model_config = None
 model = None
 inferer = None
 original_postprocessing = None
+
 
 def load_model():
     global model_config, model, inferer, original_postprocessing
@@ -93,9 +89,11 @@ def load_model():
     model.eval()
     logger.info("Model loaded")
 
+
 @app.on_event("startup")
 async def startup_event():
     load_model()
+
 
 def log_processing_event(event_type: str, session_id: str, details: dict):
     audit_entry = {
@@ -106,13 +104,14 @@ def log_processing_event(event_type: str, session_id: str, details: dict):
     }
     logger.info(f"AUDIT {json.dumps(audit_entry)}")
 
+
 def get_results(input_dir: str, output_dir: str) -> Dict[str, str]:
     """
     Runs inference and writes:
       - corrected-orientation original image: {name}.png
       - mask image: {name}_trans.png  (internal; not returned)
       - blended image: {name}_blend.png
-    Returns dict with keys like "<userfilename>_original" and "<userfilename>_blend".
+    Returns dict with keys like "<stem>_original" and "<stem>_blend".
     """
     global model_config, model, inferer, original_postprocessing
 
@@ -139,7 +138,7 @@ def get_results(input_dir: str, output_dir: str) -> Dict[str, str]:
                 try:
                     processed = original_postprocessing(data_i)
                     mask = processed["pred"].detach().cpu().numpy()
-                except RuntimeError as e:
+                except RuntimeError:
                     raw = data_i["pred"].detach().cpu().numpy()
                     if raw.min() < 0 or raw.max() > 1:
                         raw = torch.sigmoid(torch.from_numpy(raw)).numpy()
@@ -193,6 +192,7 @@ def get_results(input_dir: str, output_dir: str) -> Dict[str, str]:
 
     return result_paths
 
+
 def clean_old_files(background_tasks: BackgroundTasks):
     def cleanup():
         now = datetime.now().timestamp()
@@ -204,7 +204,9 @@ def clean_old_files(background_tasks: BackgroundTasks):
                         shutil.rmtree(path, ignore_errors=True)
                 except Exception:
                     pass
+
     background_tasks.add_task(cleanup)
+
 
 def create_zip_from_results(result_paths: Dict[str, str], session_id: str) -> str:
     """
@@ -232,6 +234,7 @@ def create_zip_from_results(result_paths: Dict[str, str], session_id: str) -> st
     return zip_path
 
 # ----------------- endpoints -----------------
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
@@ -291,6 +294,7 @@ async def root(request: Request):
       <div class="footer">API: <code>POST /segment</code> • <code>GET /example</code> • <code>GET /health</code></div>
     </div>
   </div>
+
 <script>
 (function(){
   const fileInput = document.getElementById('file-input');
@@ -301,7 +305,7 @@ async def root(request: Request):
   const btnExample = document.getElementById('example');
   const btnClear = document.getElementById('clear');
 
-  // --- prefix-safe URL builder (KEY CHANGE) ---
+  // Prefix-safe URL builder
   const api = (p) => new URL(p, window.location.href).toString();
 
   let files = [];
@@ -356,32 +360,74 @@ async def root(request: Request):
     URL.revokeObjectURL(url);
   }
 
+  // Small helper: retry once on 403 with a short backoff,
+  // and always rebuild FormData with NEW File objects.
+  async function postFilesOnce(sendFiles){
+    const fd = new FormData();
+    // clone each File -> forces a fresh Blob (mimics refresh)
+    sendFiles.forEach(f => fd.append('files', new File([f], f.name, { type: f.type })));
+    return fetch(api('segment'), { method:'POST', body: fd });
+  }
+  async function postWithRetry(sendFiles){
+    let resp = await postFilesOnce(sendFiles);
+    if (resp.status === 403) {
+      await new Promise(r => setTimeout(r, 600));
+      resp = await postFilesOnce(sendFiles);
+    }
+    return resp;
+  }
+
+  // Optional: batch large selections to reduce edge false-positives
+  const MAX_FILES_PER_POST = 4;
+  function chunk(arr, n){
+    const out=[]; for(let i=0;i<arr.length;i+=n){ out.push(arr.slice(i,i+n)); } return out;
+  }
+
   btnProcess.addEventListener('click', async ()=>{
     if(files.length === 0){ setStatus('Please add at least one image.', 'warn'); return; }
     try{
       setStatus('Uploading & processing…');
-      const fd = new FormData();
-      files.forEach(f => fd.append('files', f, f.name));
-      // CHANGED: use api('segment') instead of '/segment'
-      const resp = await fetch(api('segment'), { method:'POST', body: fd });
-      if(!resp.ok){
-        const msg = await resp.text();
-        throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
+      const groups = files.length > MAX_FILES_PER_POST ? chunk(files, MAX_FILES_PER_POST) : [files];
+
+      for (let i = 0; i < groups.length; i++) {
+        const resp = await postWithRetry(groups[i]);
+        if (resp.status === 403) {
+          setStatus('Server rejected the upload (403). Please refresh the page and try again.', 'warn');
+          // Reset state so next attempt is fresh
+          fileInput.value = '';
+          files = [];
+          renderChips();
+          return;
+        }
+        if (!resp.ok) {
+          const msg = await resp.text();
+          throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
+        }
+        await downloadZipFromResponse(resp);
       }
-      setStatus('Done. Downloading ZIP…', 'ok');
-      await downloadZipFromResponse(resp);
-      setStatus('Ready.');
+      setStatus('Ready.', 'ok');
+      // Clear after success
+      fileInput.value = '';
+      files = [];
+      renderChips();
     }catch(err){
       setStatus('Error: ' + (err?.message || err), 'warn');
+      // Clear on error to avoid stale blob handles on retry
+      fileInput.value = '';
+      files = [];
+      renderChips();
     }
   });
 
   btnExample.addEventListener('click', async ()=>{
     try{
       setStatus('Running example…');
-      // CHANGED: use api('example') instead of '/example'
       const resp = await fetch(api('example'));
-      if(!resp.ok){
+      if (!resp.ok) {
+        if (resp.status === 403) {
+          setStatus('Please refresh the page and try again (403).', 'warn');
+          return;
+        }
         const msg = await resp.text();
         throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
       }
@@ -403,12 +449,13 @@ async def root(request: Request):
 async def favicon():
     return HTMLResponse(status_code=204)
 
+
 @app.get("/health")
 async def health_check():
     checks = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "components": {}
+        "components": {},
     }
     checks["components"]["upload_dir"] = "healthy" if os.path.exists(UPLOAD_DIR) else "missing"
     checks["components"]["results_dir"] = "healthy" if os.path.exists(RESULTS_DIR) else "missing"
@@ -423,14 +470,28 @@ async def health_check():
         checks["components"]["model"] = "error"
     return checks
 
+
 @app.get("/metadata")
-async def app_metadata():
+async def metadata_legacy():
+    # Kept for compatibility; some edges may block 'metadata' path names.
     return {
         "name": "MONAI Endoscopic Tool Segmentation",
         "description": "AI-powered segmentation of surgical tools in endoscopic images",
         "version": "1.0.0",
-        "output": "zip-with-original-and-blended-images"
+        "output": "zip-with-original-and-blended-images",
     }
+
+
+@app.get("/app-metadata")
+async def app_metadata():
+    # Alias that avoids WAFs sensitive to '/metadata' routes.
+    return {
+        "name": "MONAI Endoscopic Tool Segmentation",
+        "description": "AI-powered segmentation of surgical tools in endoscopic images",
+        "version": "1.0.0",
+        "output": "zip-with-original-and-blended-images",
+    }
+
 
 @app.get("/example")
 async def get_example(background_tasks: BackgroundTasks):
@@ -444,7 +505,6 @@ async def get_example(background_tasks: BackgroundTasks):
     if not os.path.exists(example_dir):
         raise HTTPException(status_code=404, detail="Example directory not found")
 
-    # Per run session
     session_id = str(uuid.uuid4())
     results_path = os.path.join(RESULTS_DIR, session_id)
     os.makedirs(results_path, exist_ok=True)
@@ -454,13 +514,20 @@ async def get_example(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail="No results produced")
 
     zip_path = create_zip_from_results(result_paths, session_id)
-
     headers = {"Content-Disposition": f'attachment; filename="{session_id}_results.zip"'}
     return FileResponse(zip_path, media_type="application/zip", headers=headers)
 
+
+# Preflight helpers: respond to OPTIONS explicitly
 @app.options("/segment")
 async def options_segment():
     return Response(status_code=204)
+
+@app.options("/{path:path}")
+async def options_any(path: str):
+    # Helps certain proxies that require an explicit 204 to non-GETs
+    return Response(status_code=204)
+
 
 @app.post("/segment")
 async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
@@ -493,14 +560,15 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
     if not saved:
         raise HTTPException(status_code=400, detail="No valid image files uploaded")
 
-    # Run inference and build zip
     try:
         result_paths = get_results(upload_path, results_path)
         if not result_paths:
             raise RuntimeError("Pipeline produced no outputs")
+
         zip_path = create_zip_from_results(result_paths, session_id)
         log_processing_event("PROCESSING_SUCCESS", session_id, {"zip": os.path.basename(zip_path)})
 
+        # FIX: proper f-string and quoting
         headers = {"Content-Disposition": f'attachment; filename="{session_id}_results.zip"'}
         return FileResponse(zip_path, media_type="application/zip", headers=headers)
 
@@ -508,9 +576,10 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
         log_processing_event("PROCESSING_ERROR", session_id, {"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Error processing images: {e}")
 
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
-    # Clean up ephemeral dirs at shutdown
     try:
         if os.path.exists(UPLOAD_DIR):
             shutil.rmtree(UPLOAD_DIR, ignore_errors=True)
@@ -521,8 +590,11 @@ async def shutdown_event():
     except Exception as e:
         logger.warning(f"Shutdown cleanup error: {e}")
 
+
 def main():
+    # In production on HU, prefer proxy_headers=True (or CLI flags).
     uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)
+
 
 if __name__ == "__main__":
     main()
