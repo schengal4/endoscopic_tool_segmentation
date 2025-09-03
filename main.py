@@ -37,6 +37,12 @@ app = FastAPI(
     description="API for segmenting surgical tools in endoscopic images",
     version="1.0.0",
 )
+
+@app.middleware("http")
+async def no_store(request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("Cache-Control", "no-store")
+    return resp
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -254,8 +260,7 @@ def create_zip_from_results(result_paths: Dict[str, str], session_id: str) -> st
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    return HTMLResponse("""
-<!doctype html>
+    return HTMLResponse("""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -263,7 +268,8 @@ async def root(request: Request):
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root { --bg:#0b1020; --card:#131a2b; --muted:#8ca3c7; --accent:#5cc8ff; --ok:#5CFF9E; --warn:#ffc857; }
-    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:#e6eefc;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:#e6eefc;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial}
     .wrap{max-width:880px;margin:40px auto;padding:0 20px}
     .card{background:var(--card);border:1px solid #1f2a44;border-radius:18px;padding:22px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
     h1{margin:0 0 10px;font-weight:700;letter-spacing:.2px}
@@ -276,29 +282,23 @@ async def root(request: Request):
     button{border:0;border-radius:12px;padding:12px 16px;font-weight:600;cursor:pointer}
     .primary{background:var(--accent)}
     .ghost{background:#243259;color:#e6eefc}
-    .example{background:#2c7a7b}
     .status{margin-top:16px;min-height:24px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;color:var(--muted)}
     .status.ok{color:var(--ok)} .status.warn{color:var(--warn)}
-    .small{font-size:12px;color:#9cb2d8;margin-top:8px}
-    .footer{margin-top:18px;color:#6a81a8;font-size:12px}
-    a:any-link{color:#9ed5ff}
-    input[type=file]{display:none}
+    .footer{margin-top:14px;color:#7d91b6;font-size:12px}
+    .thumb{width:88px;height:88px;object-fit:cover;border-radius:10px;border:1px solid #27345a}
   </style>
 </head>
 <body>
   <div class="wrap">
     <div class="card">
-      <h1>MONAI Endoscopic Tool Segmentation</h1>
-      <p class="sub">Upload endoscopic images. You’ll get a ZIP with corrected <strong>original</strong> images and <strong>blended</strong> overlays. No links, just a direct download.</p>
+      <h1>Endoscopic Tool Segmentation</h1>
+      <p class="sub">Upload one or more images. The app returns a ZIP with originals and overlays.</p>
 
-      <label for="file-input">
-        <div id="drop" class="drop">
-          <strong>Drag & drop</strong> images here, or <u>click to choose</u>.
-          <div class="small">Accepted: .jpg .jpeg .png</div>
-          <input id="file-input" type="file" accept=".jpg,.jpeg,.png" multiple>
-          <div id="files" class="files"></div>
-        </div>
-      </label>
+      <div id="drop" class="drop">
+        <p><strong>Drop images</strong> here or <u>click to select</u>.</p>
+        <input id="file-input" type="file" accept="image/*" multiple hidden>
+        <div id="files" class="files"></div>
+      </div>
 
       <div class="row">
         <button id="process" class="primary">Process</button>
@@ -324,65 +324,61 @@ async def root(request: Request):
   // Prefix-safe URL builder
   const api = (p) => new URL(p, window.location.href).toString();
 
+  // Keep the edge session fresh while the page is open
+  setInterval(() => {
+    fetch(api('app-metadata'), { cache: 'no-store' }).catch(()=>{});
+  }, 55_000);
+
   let files = [];
 
   function setStatus(msg, cls=''){ statusEl.className='status ' + cls; statusEl.textContent=msg; }
-  function prettyBytes(n){
-    if(!Number.isFinite(n)) return '';
-    const u=['B','KB','MB','GB']; let i=0; while(n>=1024 && i<u.length-1){ n/=1024; i++; }
-    return n.toFixed(n<10 && i>0 ? 1 : 0) + ' ' + u[i];
-  }
+
   function renderChips(){
-    filesList.innerHTML='';
-    files.forEach(f=>{
-      const el=document.createElement('div');
-      el.className='chip';
-      el.textContent = `${f.name} • ${prettyBytes(f.size)}`;
-      filesList.appendChild(el);
-    });
+    filesList.innerHTML = '';
+    for (const f of files) {
+      const chip = document.createElement('div');
+      chip.className = 'chip';
+      chip.textContent = `${f.name}`;
+      filesList.appendChild(chip);
+    }
   }
-  function addFiles(newFiles){
-    const accepted = ['image/jpeg','image/png'];
-    for(const f of newFiles){
-      if(!accepted.includes(f.type)) { setStatus(`Skipped ${f.name} (unsupported type)`, 'warn'); continue; }
+
+  function addFiles(fileList){
+    for (const f of fileList){
+      if (!f.type.startsWith('image/')) continue;
       files.push(f);
     }
     renderChips();
+    setStatus(files.length ? `${files.length} image(s) ready.` : 'No valid images yet.');
   }
 
-  // drag & drop
-  drop.addEventListener('dragover', e=>{ e.preventDefault(); drop.classList.add('dragover');});
+  drop.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.classList.add('dragover'); });
   drop.addEventListener('dragleave', ()=> drop.classList.remove('dragover'));
-  drop.addEventListener('drop', e=>{
+  drop.addEventListener('drop', (e)=>{
     e.preventDefault(); drop.classList.remove('dragover');
     addFiles(e.dataTransfer.files);
   });
-
-  fileInput.addEventListener('change', e=> addFiles(e.target.files));
-
-  btnClear.addEventListener('click', ()=>{
-    files = []; renderChips(); fileInput.value=''; setStatus('Cleared. Ready.');
-  });
+  drop.addEventListener('click', ()=> fileInput.click());
+  fileInput.addEventListener('change', ()=> addFiles(fileInput.files));
 
   async function downloadZipFromResponse(resp){
-    const cd = resp.headers.get('Content-Disposition') || '';
-    const match = cd.match(/filename="?([^"]+)"?/i);
-    const name = match ? match[1] : `results_${Date.now()}.zip`;
     const blob = await resp.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = name;
+    a.href = url; a.download = 'results.zip';
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   }
 
-  // Small helper: retry once on 403 with a short backoff,
-  // and always rebuild FormData with NEW File objects.
-  async function postFilesOnce(sendFiles){
+  function postFilesOnce(sendFiles){
     const fd = new FormData();
-    // clone each File -> forces a fresh Blob (mimics refresh)
     sendFiles.forEach(f => fd.append('files', new File([f], f.name, { type: f.type })));
-    return fetch(api('segment'), { method:'POST', body: fd });
+    return fetch(api('segment?t=' + Date.now()), {
+      method:'POST',
+      body: fd,
+      cache: 'no-store',
+      headers: { 'X-Requested-With': 'fetch' }
+    });
   }
   async function postWithRetry(sendFiles){
     let resp = await postFilesOnce(sendFiles);
@@ -393,42 +389,31 @@ async def root(request: Request):
     return resp;
   }
 
-  // Optional: batch large selections to reduce edge false-positives
-  const MAX_FILES_PER_POST = 4;
-  function chunk(arr, n){
-    const out=[]; for(let i=0;i<arr.length;i+=n){ out.push(arr.slice(i,i+n)); } return out;
-  }
-
   btnProcess.addEventListener('click', async ()=>{
-    if(files.length === 0){ setStatus('Please add at least one image.', 'warn'); return; }
+    if (!files.length){ setStatus('Please add at least one image.', 'warn'); return; }
+    setStatus('Uploading & processing…');
     try{
-      setStatus('Uploading & processing…');
-      const groups = files.length > MAX_FILES_PER_POST ? chunk(files, MAX_FILES_PER_POST) : [files];
-
-      for (let i = 0; i < groups.length; i++) {
-        const resp = await postWithRetry(groups[i]);
-        if (resp.status === 403) {
-          setStatus('Server rejected the upload (403). Please refresh the page and try again.', 'warn');
-          // Reset state so next attempt is fresh
-          fileInput.value = '';
-          files = [];
-          renderChips();
-          return;
-        }
+      const chunkSize = 4;
+      for (let i=0;i<files.length;i+=chunkSize){
+        const chunk = files.slice(i, i+chunkSize);
+        const resp = await postWithRetry(chunk);
         if (!resp.ok) {
+          if (resp.status === 403) {
+            setStatus('Please refresh the page and try again (403).', 'warn');
+            return;
+          }
           const msg = await resp.text();
           throw new Error(`${resp.status} ${resp.statusText} – ${msg}`);
         }
+        setStatus('Done. Downloading ZIP…', 'ok');
         await downloadZipFromResponse(resp);
       }
-      setStatus('Ready.', 'ok');
-      // Clear after success
+      setStatus('Ready.');
       fileInput.value = '';
       files = [];
       renderChips();
     }catch(err){
       setStatus('Error: ' + (err?.message || err), 'warn');
-      // Clear on error to avoid stale blob handles on retry
       fileInput.value = '';
       files = [];
       renderChips();
@@ -438,7 +423,7 @@ async def root(request: Request):
   btnExample.addEventListener('click', async ()=>{
     try{
       setStatus('Running example…');
-      const resp = await fetch(api('example'));
+      const resp = await fetch(api('example'), { cache: 'no-store', headers: { 'X-Requested-With': 'fetch' } });
       if (!resp.ok) {
         if (resp.status === 403) {
           setStatus('Please refresh the page and try again (403).', 'warn');
@@ -454,11 +439,14 @@ async def root(request: Request):
       setStatus('Error: ' + (err?.message || err), 'warn');
     }
   });
+
+  btnClear.addEventListener('click', ()=>{
+    files = []; filesList.innerHTML = ''; fileInput.value = ''; setStatus('Cleared.');
+  });
 })();
 </script>
 </body>
-</html>
-    """)
+</html>""")
 
 # (Optional) a simple favicon to quiet 404s in logs
 @app.get("/favicon.ico")
@@ -609,7 +597,7 @@ async def shutdown_event():
 
 def main():
     # In production on HU, prefer proxy_headers=True (or CLI flags).
-    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=5000, reload=False)
 
 
 if __name__ == "__main__":
