@@ -22,6 +22,10 @@ import logging
 import json
 from fastapi import Request, Response
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+
 
 # ---- logging ----
 logging.basicConfig(level=logging.INFO)
@@ -88,6 +92,18 @@ def load_model():
     model.load_state_dict(state)
     model.eval()
     logger.info("Model loaded")
+
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request, exc):
+    if exc.status_code == 403:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Access temporarily forbidden. Please refresh and try again."}
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail if exc.detail else "Unexpected error occurred."}
+    )
 
 
 @app.on_event("startup")
