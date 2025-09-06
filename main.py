@@ -6,7 +6,7 @@ import shutil
 import uvicorn
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from typing import List, Dict, Optional
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, Response, Query, status
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +25,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from typing import Optional, List
+from fastapi.responses import FileResponse
+
 
 
 # ---- logging ----
@@ -34,9 +37,26 @@ logger = logging.getLogger(__name__)
 # ---- app ----
 app = FastAPI(
     title="MONAI Endoscopic Tool Segmentation API",
-    description="API for segmenting surgical tools in endoscopic images",
     version="1.0.0",
+    description="""
+API for segmenting surgical tools in endoscopic images.
+
+**Using this API via Swagger (/docs)**
+1. Open **/docs** and find **POST /segment**.
+2. Click **Try it out**, attach 1+ image files (PNG/JPG).
+3. If you ever see **403 Forbidden** responses in Swagger (from an upstream gateway),
+   set the optional **t** query parameter to any value (e.g., a timestamp) and click **Execute** again,
+   or simply refesh the page and hit **Execute** again. These are transient, edge-level blocks.
+4. The endpoint returns a ZIP file with the original (re-oriented) images and blended overlays.
+   In Swagger, use the **Download file** link in the response section to save the ZIP.
+""",
+    openapi_tags=[
+        {"name": "Segmentation", "description": "Core endpoints for image processing."},
+        {"name": "Utilities", "description": "Health check and metadata."},
+        {"name": "Examples", "description": "Run the built-in demo set."},
+    ],
 )
+
 
 @app.middleware("http")
 async def no_store(request, call_next):
@@ -454,8 +474,13 @@ async def favicon():
     return HTMLResponse(status_code=204)
 
 
-@app.get("/health")
+@app.get("/health", tags=["Utilities"])
 async def health_check():
+    """
+    Liveness/readiness probe for the service.
+    Returns component status (dirs, GPU availability, and model load state).
+    """
+    # ... (existing implementation unchanged) ...
     checks = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -475,9 +500,9 @@ async def health_check():
     return checks
 
 
-@app.get("/metadata")
+@app.get("/metadata", tags=["Utilities"])
 async def metadata_legacy():
-    # Kept for compatibility; some edges may block 'metadata' path names.
+    """Legacy alias for app info (kept for compatibility)."""
     return {
         "name": "MONAI Endoscopic Tool Segmentation",
         "description": "AI-powered segmentation of surgical tools in endoscopic images",
@@ -486,8 +511,9 @@ async def metadata_legacy():
     }
 
 
-@app.get("/app-metadata")
+@app.get("/app-metadata", tags=["Utilities"])
 async def app_metadata():
+    """Basic app info. Use this as a lightweight ping endpoint."""
     # Alias that avoids WAFs sensitive to '/metadata' routes.
     return {
         "name": "MONAI Endoscopic Tool Segmentation",
@@ -497,12 +523,37 @@ async def app_metadata():
     }
 
 
-@app.get("/example")
-async def get_example(background_tasks: BackgroundTasks):
+@app.get(
+    "/example",
+    tags=["Examples"],
+    response_class=FileResponse,
+    responses={
+        200: {
+            "description": "ZIP built from the bundled `./real` example images.",
+            "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}},
+        },
+        403: {
+            "description": "Transient edge/WAF block. In Swagger, set the 't' query param (any value) and retry, or refresh /docs and execute again."
+        },
+        404: {"description": "`./real` folder not found on server."},
+        500: {"description": "Server error while generating example results."},
+    },
+)
+async def get_example(
+    background_tasks: BackgroundTasks,
+    t: Optional[str] = Query(
+        default=None,
+        description="Cache-buster for Swagger. If you encounter a 403, set this to any value and retry."
+    ),
+):
     """
-    Processes images in ./real and returns a ZIP containing only the original
-    (corrected orientation) and blended images.
+    Processes images in `./real` and returns a ZIP with the original and blended images.
+
+    **Swagger tips (403 handling):**
+    - If you receive **403 Forbidden** in `/docs`, set **t** to any value (e.g., `123`) and click **Execute** again,
+      or refresh `/docs` and retry. The 403 originates from an upstream gateway and is typically transient.
     """
+    # ... (existing implementation unchanged) ...
     clean_old_files(background_tasks)
 
     example_dir = os.path.join(BASE_DIR, "real")
@@ -533,10 +584,45 @@ async def options_any(path: str):
     return Response(status_code=204)
 
 
-@app.post("/segment")
-async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)):
+@app.post(
+    "/segment",
+    response_class=FileResponse,
+    tags=["Segmentation"],
+    responses={
+        200: {
+            "description": "ZIP with originals and blends.",
+            "content": {
+                "application/zip": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+        400: {"description": "Bad request (no files or unsupported format)."},
+        403: {
+            "description": "Transient edge/WAF block. In Swagger, set the 't' query param (any value) and retry, or refresh /docs and execute again."
+        },
+        500: {"description": "Server error while processing images."},
+    },
+)
+async def segment_image(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(..., description="One or more PNG/JPG images."),
+    t: Optional[str] = Query(
+        default=None,
+        description="Cache-buster for Swagger. If you encounter a 403, set this to any value (e.g., current timestamp) and retry."
+    ),
+):
     """
-    Upload and process images; returns a ZIP with only *_original and *_blend files.
+    Upload and process images; returns a ZIP with only `*_original` and `*_blend` files.
+
+    **Swagger tips (403 handling):**
+    - If you receive **403 Forbidden** in `/docs`, set the optional **t** query to any value and click **Execute** again,
+      or refresh `/docs` and retry. This 403 is from an upstream gateway and is safe to retry.
+
+    **Returns**
+    - `application/zip` with:
+        - `results/<stem>/<stem>.png` (re-oriented original)
+        - `results/<stem>/<stem>_blend.png` (overlay)
     """
     clean_old_files(background_tasks)
 
@@ -579,6 +665,8 @@ async def segment_image(background_tasks: BackgroundTasks, files: List[UploadFil
     except Exception as e:
         log_processing_event("PROCESSING_ERROR", session_id, {"error": str(e)})
         raise HTTPException(status_code=500, detail=f"Error processing images: {e}")
+
+
 
 
 
