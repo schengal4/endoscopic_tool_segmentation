@@ -39,20 +39,23 @@ app = FastAPI(
     title="MONAI Endoscopic Tool Segmentation API",
     version="1.0.0",
     description="""
-API for segmenting surgical tools in endoscopic images.
+This API provides segmentation of surgical tools in endoscopic images.
 
-**Using this API via Swagger (/docs)**
-1. Open **/docs** and find **POST /segment**.
-2. Click **Try it out**, attach 1+ image files (PNG/JPG).
-3. If you ever see **403 Forbidden** responses in Swagger (from an upstream gateway),
-   simply refesh the page and hit **Execute** again. These are transient, edge-level blocks.
-4. The endpoint returns a ZIP file with the original (re-oriented) images and blended overlays.
-   In Swagger, use the **Download file** link in the response section to save the ZIP.
+**How to use via Swagger (/docs):**
+1. Open **POST /segment** below.
+2. Click **Try it out** and upload one or more image files (PNG or JPG).
+3. Click **Execute** to run the segmentation.  
+   - If you see a **403 Forbidden** error, refresh this page and try again.
+4. The response will include a ZIP file containing:
+   - Re-oriented original images
+   - Overlay images with segmentation masks
+
+In the response section, use the **Download file** link to save the ZIP results.
 """,
     openapi_tags=[
-        {"name": "Segmentation", "description": "Core endpoints for image processing."},
-        {"name": "Utilities", "description": "Health check and metadata."},
-        {"name": "Examples", "description": "Run the built-in demo set."},
+        {"name": "Segmentation", "description": "Endpoints for image segmentation."},
+        {"name": "Utilities", "description": "Health checks and application metadata."},
+        {"name": "Examples", "description": "Run the built-in demo dataset."},
     ],
 )
 
