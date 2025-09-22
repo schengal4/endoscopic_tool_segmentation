@@ -45,8 +45,7 @@ API for segmenting surgical tools in endoscopic images.
 1. Open **/docs** and find **POST /segment**.
 2. Click **Try it out**, attach 1+ image files (PNG/JPG).
 3. If you ever see **403 Forbidden** responses in Swagger (from an upstream gateway),
-   set the optional **t** query parameter to any value (e.g., a timestamp) and click **Execute** again,
-   or simply refesh the page and hit **Execute** again. These are transient, edge-level blocks.
+   simply refesh the page and hit **Execute** again. These are transient, edge-level blocks.
 4. The endpoint returns a ZIP file with the original (re-oriented) images and blended overlays.
    In Swagger, use the **Download file** link in the response section to save the ZIP.
 """,
@@ -393,7 +392,7 @@ async def root(request: Request):
   function postFilesOnce(sendFiles){
     const fd = new FormData();
     sendFiles.forEach(f => fd.append('files', new File([f], f.name, { type: f.type })));
-    return fetch(api('segment?t=' + Date.now()), {
+    return fetch(api('segment'), {
       method:'POST',
       body: fd,
       cache: 'no-store',
@@ -541,17 +540,12 @@ async def app_metadata():
 )
 async def get_example(
     background_tasks: BackgroundTasks,
-    t: Optional[str] = Query(
-        default=None,
-        description="Cache-buster for Swagger. If you encounter a 403, set this to any value and retry."
-    ),
 ):
     """
     Processes images in `./real` and returns a ZIP with the original and blended images.
 
     **Swagger tips (403 handling):**
-    - If you receive **403 Forbidden** in `/docs`, set **t** to any value (e.g., `123`) and click **Execute** again,
-      or refresh `/docs` and retry. The 403 originates from an upstream gateway and is typically transient.
+    - If you receive **403 Forbidden** in `/docs`, refresh `/docs` and retry. The 403 originates from an upstream gateway and is typically transient.
     """
     # ... (existing implementation unchanged) ...
     clean_old_files(background_tasks)
@@ -599,7 +593,7 @@ async def options_any(path: str):
         },
         400: {"description": "Bad request (no files or unsupported format)."},
         403: {
-            "description": "Transient edge/WAF block. In Swagger, set the 't' query param (any value) and retry, or refresh /docs and execute again."
+            "description": "Transient edge/WAF block. Refresh /docs and try again."
         },
         500: {"description": "Server error while processing images."},
     },
@@ -607,17 +601,12 @@ async def options_any(path: str):
 async def segment_image(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="One or more PNG/JPG images."),
-    t: Optional[str] = Query(
-        default=None,
-        description="Cache-buster for Swagger. If you encounter a 403, set this to any value (e.g., current timestamp) and retry."
-    ),
 ):
     """
     Upload and process images; returns a ZIP with only `*_original` and `*_blend` files.
 
     **Swagger tips (403 handling):**
-    - If you receive **403 Forbidden** in `/docs`, set the optional **t** query to any value and click **Execute** again,
-      or refresh `/docs` and retry. This 403 is from an upstream gateway and is safe to retry.
+    - If you receive **403 Forbidden** in `/docs`, refresh `/docs` and retry. This 403 is from an upstream gateway and is safe to retry.
 
     **Returns**
     - `application/zip` with:
